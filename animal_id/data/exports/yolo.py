@@ -1,6 +1,6 @@
 """Ultralytics YOLO detection labels, split lists and dataset YAML.
 
-yolo.write(samples, ("dog",), {Source.COCO: 17000}, DATA_DIR / "detector/dogs_detection.yaml")
+yolo.write(samples, ("dog",), DATA_DIR / "detector/dogs.yaml", max_negatives={Source.COCO: 17000})
 """
 
 import hashlib
@@ -20,12 +20,19 @@ logger = logging.getLogger(__name__)
 def write(
     samples: list[Sample],
     classes: tuple[str, ...],
-    max_negatives: dict[str, int],
     yaml_path: Path,
+    max_negatives: dict[str, int] | None = None,
+    repeats: dict[str, int] | None = None,
     val_fraction: float = 0.1,
     seed: int = 42,
 ) -> None:
-    """Writes a YOLO label beside each image, and train/val lists beside ``yaml_path``."""
+    """Writes a YOLO label beside each image, and train/val lists beside ``yaml_path``.
+
+    A source in ``max_negatives`` keeps at most that many animal-free images; a
+    source in ``repeats`` is listed that many times in train (oversampling).
+    """
+    max_negatives = max_negatives or {}
+    repeats = repeats or {}
     rng = random.Random(seed)
     kept, negatives = [], defaultdict(list)
     for sample in samples:
@@ -58,7 +65,10 @@ def write(
         )
         # Hashing the path keeps a split stable when sources are added or removed.
         bucket = int(hashlib.sha1(sample.path.encode()).hexdigest()[:8], 16) / 16**8
-        lists["val" if bucket < val_fraction else "train"].append(image)
+        if bucket < val_fraction:
+            lists["val"].append(image)
+        else:
+            lists["train"] += [image] * repeats.get(sample.source, 1)
 
     yaml_path.parent.mkdir(parents=True, exist_ok=True)
     for split, images in lists.items():
