@@ -10,7 +10,7 @@ training the models.
 
 ## Model card
 
-Release 0.2.0. The better value in each row is bold.
+Release 0.2.0. The better value in each column is bold.
 
 ### Embedding
 | Embedder | DogReID top-1 | Top-5 | MRR | TAR@FAR=1% | Params | CPU, 4 threads |
@@ -37,9 +37,9 @@ cats, and goats, deer and sheep.
 
 `AnimalPipeline` in `animal_id/pipeline/animal_pipeline.py` runs three ONNX models:
 
-1. **Detector** (`ONNXDetector`): YOLO11n, outputs animal bounding boxes.
-2. **Keypoint estimator** (`ONNXKeypoint`): YOLO11n-pose, finds 4 facial landmarks (eyes, nose, throat) to refine the crop. **Off by default**: benchmarks are better without it.
-3. **Embedder** (`ONNXEmbedding`): DINOv2-B/14 + ArcFace, 512-dim L2-normalised vectors compared by cosine similarity, matching Immich's face-embedding contract.
+1. **Detector** (`ONNXDetector`): YOLO, outputs animal bounding boxes.
+2. **Keypoint estimator** (`ONNXKeypoint`): YOLO-pose, finds 4 facial landmarks (eyes, nose, throat) to refine the crop. **Off by default**: benchmarks are better without it.
+3. **Embedder** (`ONNXEmbedding`): a backbone from `embedding/backbones.py` trained with a margin head, 512-dim L2-normalised vectors compared by cosine similarity, matching Immich's face-embedding contract.
 
 `pipeline/onnx_models.py` wraps the three models and `pipeline/models.py` defines the `DetectionModel`, `KeypointModel`, and `EmbeddingModel` Protocols they satisfy.
 
@@ -51,14 +51,14 @@ animal_id/
 ├── data/            # Sample contract, source adapters, exports, contact sheets
 ├── detection/       # YOLO detector training (Ultralytics)
 ├── keypoint/        # YOLO-pose training on Stanford Dogs keypoints
-├── embedding/       # PyTorch embedding model: backbones.py, models.py (ArcFace head), losses.py, trainer.py
+├── embedding/       # PyTorch embedding model: backbones.py, models.py, losses.py (margin heads), trainer.py
 ├── identification/  # Immich-like clustering (cosine DBSCAN) + cluster metrics
 ├── benchmark/       # MRR, top-k accuracy, TAR@FAR
 ├── tracking/        # Weights & Biases logger
 └── common/          # constants.py (single source of truth for paths), datasets, seeding, shared YOLO converter
 scripts/             # train_master.py, run_ablation.py, and numbered helper scripts (see below)
 tests/               # unit/ and integration/
-.planning/           # Dated design docs: production audit (2026-04) and backbone ablation plan (2026-06)
+.planning/           # Dated design docs (audit, backbone ablation, sidecar, data contract)
 ```
 
 Every dataset is parsed by an adapter in `animal_id/data/sources/` into `Sample`s
