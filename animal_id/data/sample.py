@@ -3,6 +3,7 @@
 samples = read_manifest(MANIFEST_DIR / "dogfacenet.jsonl")
 """
 
+import hashlib
 import json
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
@@ -13,10 +14,12 @@ from pathlib import Path
 class Source(StrEnum):
     """Every dataset with an adapter or a written manifest; the value names its manifest."""
 
+    CAT_INDIVIDUALS = "cat_individuals"
     COCO = "coco"
     DOGFACENET = "dogfacenet"
     DOGREID = "dogreid"
     MPDD = "mpdd"
+    OPEN_IMAGES = "open_images"
     OXFORD_PETS = "oxford_pets"
     STANFORD_DOGS = "stanford_dogs"
 
@@ -57,6 +60,11 @@ class Sample:
                         "Multiple identities in one sample without a bounding box. Identity is ambiguous."
                     )
                 missing_xyxy += 1
+
+
+def hash_fraction(key: str) -> float:
+    """A fixed value in [0, 1) per key: splits that never move when sources change."""
+    return int(hashlib.sha1(key.encode()).hexdigest()[:8], 16) / 16**8
 
 
 def write_manifest(samples: Iterable[Sample], path: Path) -> None:
