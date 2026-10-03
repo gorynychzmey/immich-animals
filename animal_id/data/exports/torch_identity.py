@@ -2,7 +2,7 @@
 
 Boxed identities are cropped to files at export, so every row is one animal's image.
 
-torch_identity.write(sources.load(Source.DOGFACENET), {"train": ..., "val": ..., "test": ...})
+torch_identity.export(DATA_CONFIG.sources, {"train": ..., "val": ..., "test": ...}, 2, ())
 """
 
 import json
@@ -14,14 +14,13 @@ from pathlib import Path
 from PIL import Image
 
 from animal_id.common.constants import DATA_DIR, PROJECT_ROOT
-from animal_id.data.sample import Sample
+from animal_id.data import dedupe, sources
+from animal_id.data.images import crop
+from animal_id.data.sample import Sample, Source
 
 logger = logging.getLogger(__name__)
 
 CROP_DIR = "identity_crops"
-# Padding by this fraction of the box width on every side matches the sidecar's
-# BBOX_PAD: train on the crops we serve.
-CROP_PAD = 0.1
 
 
 def splits(
@@ -100,18 +99,17 @@ def write(samples: list[Sample], paths: dict[str, Path], min_images: int = 5) ->
             out = PROJECT_ROOT / row["file_path"]
             out.parent.mkdir(parents=True, exist_ok=True)
             with Image.open(DATA_DIR / row["crop"]["image"]) as image:
-                w, h = image.size
-                x1, y1, x2, y2 = (
-                    v * s
-                    for v, s in zip(row["crop"]["xyxy"], (w, h, w, h), strict=True)
-                )
-                pad = (x2 - x1) * CROP_PAD
-                box = (
-                    max(0, x1 - pad),
-                    max(0, y1 - pad),
-                    min(w, x2 + pad),
-                    min(h, y2 + pad),
-                )
-                image.convert("RGB").crop(tuple(map(int, box))).save(out, quality=95)
+                crop(image, row["crop"]["xyxy"]).save(out, quality=95)
         paths[split].write_text(json.dumps(rows, indent=2))
         logger.info(f"Wrote {len(rows)} {split} rows to {paths[split]}")
+
+
+def export(
+    names: tuple[Source, ...],
+    paths: dict[str, Path],
+    min_images: int,
+    dedupe_sources: tuple[Source, ...],
+) -> None:
+    """Loads ``names``, drops burst duplicates from ``dedupe_sources``, and writes the splits."""
+    samples = [s for name in names for s in sources.load(name)]
+    write(dedupe.drop_bursts(samples, dedupe_sources), paths, min_images)

@@ -297,15 +297,15 @@ def run_embedding_data_prep():
     """Runs the data preparation step for the embedding model."""
     logger.info("STARTING EMBEDDING DATA PREPARATION")
 
-    samples = [s for name in DATA_CONFIG.sources for s in sources.load(name)]
-    torch_identity.write(
-        samples,
+    torch_identity.export(
+        DATA_CONFIG.sources,
         {
             "train": PROJECT_ROOT / DATA_CONFIG.train_json_path,
             "val": PROJECT_ROOT / DATA_CONFIG.val_json_path,
             "test": PROJECT_ROOT / DATA_CONFIG.test_json_path,
         },
         DATA_CONFIG.min_images,
+        DATA_CONFIG.dedupe,
     )
 
 
