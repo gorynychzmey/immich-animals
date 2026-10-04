@@ -1,39 +1,61 @@
 # Animal Identification for Immich
 
-Detects and identifies individual animals in photos, mirroring Immich's people pipeline (detect → crop → embed → cluster → user confirms). Initial focus is dogs.
+Detects and identifies individual animals in photos, mirroring Immich's people pipeline (detect → crop → embed → cluster → user confirms). Dogs and cats so far.
 
 ## Just want it working in Immich?
 
-**[sidecar/](sidecar/)** adds your dogs to Immich's People tab. One container,
+**[sidecar/](sidecar/)** adds your dogs and cats to Immich's People tab. One container,
 one setting, no fork of Immich. Start there — the rest of this README is about
 training the models.
 
 ## Model card
 
-Release 0.2.0. The better value in each column is bold. The Embedding and
-Households tables come from `scripts/evaluate_release.py`, with the metric
-definitions in `animal_id/identification/households.py`.
+Release 0.3.0, the first with cats. The better value in each column is bold.
+The Embedding and Households tables come from `scripts/evaluate_release.py`,
+with the metric definitions in `animal_id/identification/households.py`.
 
 ### Embedding
-| Embedder | DogReID top-1 | Top-5 | MRR | TAR@FAR=1% | Params | CPU, 4 threads |
-| --- | --- | --- | --- | --- | --- | --- |
-| DINOv2-B/14 + ArcFace (0.2.0) | **0.543** | **0.764** | **0.642** | **0.761** | 87 M | 128 ms |
-| ConvNeXt-Tiny + ArcFace (0.1.x) | 0.254 | 0.478 | 0.368 | 0.483 | **29 M** | **34 ms** |
+| Embedder | DogReID top-1 | Top-5 | MRR | TAR@FAR=1% | Cat top-1 | Cat TAR@FAR=1% | Params | CPU, 4 threads |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| DINOv2-B/14 + ArcFace, dogs and cats (0.3.0) | 0.512 | 0.758 | 0.625 | **0.762** | **0.962** | **0.837** | 87 M | 128 ms |
+| DINOv2-B/14 + ArcFace, dogs (0.2.0) | **0.534** | **0.766** | **0.638** | 0.758 | 0.923 | 0.564 | 87 M | 128 ms |
 
-**Test set**: [DogReID-1553](https://doi.org/10.7910/DVN/LVTRLG) open-set test,
-777 dogs filmed by their owners on phones. Each query is matched against a
-gallery from a different scene, cropped to the ground-truth box plus 10%.
+**Test sets**: [DogReID-1553](https://doi.org/10.7910/DVN/LVTRLG) open-set test,
+777 dogs filmed by their owners on phones; each query is matched against a
+gallery from a different scene, cropped to the ground-truth box plus 10%. Cats:
+123 held-out shelter cats from [Cat Individual Images](https://www.kaggle.com/datasets/timost1234/cat-individuals),
+one photo per near-duplicate burst (667 photos), leave-one-out.
+
+Retraining the 0.2.0 recipe with another seed moved DogReID top-1 by about 5
+points, more than the gap between these rows (`.planning/10-2-2026-cats/`). The
+0.3.0 seed was chosen on validation identities only.
+
+### Households
+| At the shipped Max Distance | Dogs in one correct person | Never grouped | Merged with another pet | Cats in one correct person | Merged |
+| --- | --- | --- | --- | --- | --- |
+| 0.3.0 | 46% | 34% | **8%** | **70%** | **1%** |
+| 0.2.0 | **47%** | **27%** | 10% | 23% | 8% |
+
+**Simulation**: 300 homes per half of the held-out pets, each with 1-4 own pets
+(3-15 photos) and 20-200 one-off strangers, clustered the way Immich assigns
+faces (`identification.cluster`, minFaces 3). A pet is in one correct person
+when the person holding most of its photos is at least 90% that pet. Dogs use
+DogReID and Max Distance 0.375 (0.2.0: 0.4); cats use the held-out cats above and 0.35. Every
+pet is cropped from its labelled box, so this measures the embedder alone;
+0.2.0's detector finds only 8% of cats in the first place.
 
 ### Detection
-| Detector (conf >= 0.3) | DogReID recall | Commons + MPDD recall | Dog-free photos with a detection |
-| --- | --- | --- | --- |
-| YOLO11n fine-tuned with DogReID (0.2.0) | **0.946** | **0.882** | 0.216 |
-| YOLO11n (0.1.1) | 0.826 | 0.851 | **0.156** |
+| Detector (conf >= 0.3) | DogReID dogs | Commons + MPDD dogs | Owner cats | Commons cats | Dog- and cat-free photos with a detection |
+| --- | --- | --- | --- | --- | --- |
+| YOLO11n, dogs and cats (0.3.0) | **0.953** | 0.876 | **0.990** | **0.912** | **0.234** |
+| YOLO11n, dogs (0.2.0) | 0.947 | **0.882** | 0.083 | 0.192 | 0.255 |
 
-**Test sets**: the DogReID-1553 open-set test frames (3,755, IoU >= 0.5), and
-`sidecar-validation`: 1,196 photos of 88 named dogs plus 450 dog-free photos.
-Most false positives are other quadrupeds: 71% of wolves and foxes, 11% of
-cats, and goats, deer and sheep.
+**Test sets**: the DogReID-1553 open-set test frames (3,755, IoU >= 0.5); the
+held-out shelter cats (2,550 photos, IoU >= 0.5 against YOLO11x boxes); and
+`sidecar-validation`: 1,199 photos of 88 named dogs, 1,165 photos of cats (50
+named), and 325 photos with neither. 0.2.0's cat "detections" are labelled dog.
+Most false positives are other animals: 76% of wolf and fox photos, half the
+rabbits and a third of the deer.
 
 ## Architecture
 
@@ -155,6 +177,10 @@ Exported models land in `models/onnx/` as `detector.onnx`, `keypoint.onnx`, and
 backbone, preprocessing recipe, test metrics and clustering `eps`. The embedder is
 trained on ImageNet-normalised input while the YOLO stages take raw `[0, 1]`, so
 `ONNXEmbedding` normalises and the others do not. `copy_models.sh` and `reload_immich.sh` push them into the `immich-clone/` fork.
+
+Each release's files live in `models/onnx/<version>/release/` (what the sidecar
+image ships, matching `sidecar/SHA256SUMS` for the current version), with any
+candidates that were compared beside it, e.g. `models/onnx/0.3.0/seed_13/`.
 
 ## Testing and CI
 
