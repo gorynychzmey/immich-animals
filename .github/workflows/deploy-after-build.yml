@@ -38,19 +38,41 @@ jobs:
           printf '%s\n' "${DEPLOY_KNOWN_HOSTS}" >"${HOME}/.ssh/known_hosts"
           chmod 600 "${HOME}/.ssh/deploy_key" "${HOME}/.ssh/known_hosts"
 
-      # The key is pinned on the host to a forced command (pull IMAGE from the
-      # env file, restart animal-ml.service, fail on a bad start), kept in the
-      # infra repo under deploy/immich-animals/. Whatever is sent here is ignored.
       - name: Deploy on server
         env:
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ vars.DEPLOY_USER || 'root' }}
-          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_ENV_FILE: ${{ vars.DEPLOY_ENV_FILE }}
+          # Optional; undefined repo variables expand to "" and fall back below.
+          SIDECAR_SERVICE: ${{ vars.SIDECAR_SERVICE }}
         run: |
           set -euo pipefail
           [[ -n "${DEPLOY_HOST}" ]] || { echo "Missing variable DEPLOY_HOST"; exit 1; }
+          deploy_user="${DEPLOY_USER:-root}"
+          deploy_port="${DEPLOY_PORT:-22}"
+          env_file="${DEPLOY_ENV_FILE:-/opt/animal-ml/config/.env}"
+          sidecar_service="${SIDECAR_SERVICE:-animal-ml.service}"
+
           ssh -i "${HOME}/.ssh/deploy_key" \
             -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
-            -p "${DEPLOY_PORT}" \
-            "${DEPLOY_USER}@${DEPLOY_HOST}"
+            -p "${deploy_port}" \
+            "${deploy_user}@${DEPLOY_HOST}" \
+            "ENV_FILE='${env_file}' SIDECAR_SERVICE='${sidecar_service}' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          set -a
+          source "${ENV_FILE}"
+          set +a
+
+          if [[ -z "${IMAGE:-}" ]]; then
+            echo "Set IMAGE in ${ENV_FILE}"
+            exit 1
+          fi
+
+          echo "Pulling ${IMAGE}"
+          podman pull "${IMAGE}"
+          sudo systemctl restart "${SIDECAR_SERVICE}"
+          sudo systemctl status "${SIDECAR_SERVICE}" --no-pager
+          REMOTE
