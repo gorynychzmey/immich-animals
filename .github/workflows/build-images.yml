@@ -1,0 +1,74 @@
+# Fork-only: builds the OpenVINO sidecar image for our Immich on beelink.
+# Upstream's own workflows (python-package, sidecar-release) are disabled here.
+name: Build Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_version:
+        description: "Build version in semver format X.Y.Z (optional for manual run)"
+        required: false
+        default: ""
+  push:
+    tags:
+      - "build-*"
+
+concurrency:
+  group: build-images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Sidecar tests
+        run: uv run --project sidecar pytest sidecar
+
+  build:
+    needs: tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Values go through env:, not ${{ }} inside the script, so an input
+      # cannot be spliced in as code.
+      - name: Resolve image repo and version
+        id: repos
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          BUILD_VERSION_INPUT: ${{ github.event.inputs.build_version || '' }}
+        run: |
+          set -euo pipefail
+          owner_lc="$(printf '%s' "${REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_NAME}" == build-* ]]; then
+            version="${GITHUB_REF_NAME#build-}"
+          else
+            version="${BUILD_VERSION_INPUT}"
+          fi
+          echo "ghcr_repo=ghcr.io/${owner_lc}/animal-ml-openvino" >>"${GITHUB_OUTPUT}"
+          echo "version=${version}" >>"${GITHUB_OUTPUT}"
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # build.sh validates the version, falling back to sidecar/pyproject.toml.
+      - name: Build, smoke-test and push
+        env:
+          CONTAINER_ENGINE: docker
+          USE_BUILDX: "true"
+          IMAGE_REPO: ${{ steps.repos.outputs.ghcr_repo }}
+          VERSION_OVERRIDE: ${{ steps.repos.outputs.version }}
+        run: bash ./build.sh

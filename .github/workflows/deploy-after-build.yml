@@ -1,0 +1,56 @@
+name: Deploy After Build
+
+on:
+  workflow_run:
+    workflows:
+      - Build Images
+    types:
+      - completed
+
+concurrency:
+  group: deploy-after-build
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Only a successful build of a build-X.Y.Z tag deploys; a manual build stops
+    # at the registry.
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        startsWith(github.event.workflow_run.head_branch, 'build-')
+      }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ -n "${DEPLOY_SSH_KEY}" && -n "${DEPLOY_KNOWN_HOSTS}" ]] || {
+            echo "Missing secret DEPLOY_SSH_KEY or DEPLOY_KNOWN_HOSTS"; exit 1; }
+          install -d -m 700 "${HOME}/.ssh"
+          printf '%s\n' "${DEPLOY_SSH_KEY}" >"${HOME}/.ssh/deploy_key"
+          printf '%s\n' "${DEPLOY_KNOWN_HOSTS}" >"${HOME}/.ssh/known_hosts"
+          chmod 600 "${HOME}/.ssh/deploy_key" "${HOME}/.ssh/known_hosts"
+
+      # The key is pinned on the host to a forced command (pull IMAGE from the
+      # env file, restart animal-ml.service, fail on a bad start), kept in the
+      # infra repo under deploy/immich-animals/. Whatever is sent here is ignored.
+      - name: Deploy on server
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER || 'root' }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+        run: |
+          set -euo pipefail
+          [[ -n "${DEPLOY_HOST}" ]] || { echo "Missing variable DEPLOY_HOST"; exit 1; }
+          ssh -i "${HOME}/.ssh/deploy_key" \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
+            -p "${DEPLOY_PORT}" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}"

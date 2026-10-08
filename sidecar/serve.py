@@ -47,9 +47,15 @@ SPECIES_DEFAULTS = {"dog": (0.3, 0.375), "cat": (0.3, 0.35)}
 IMMICH_MAX_DISTANCE = float(os.environ.get("IMMICH_MAX_DISTANCE", "0.5"))
 
 
-# Only the openvino image ships this provider; there the models run on the Intel GPU.
+# Only the openvino image ships this provider; there the models run on the Intel GPU
+# (OPENVINO_DEVICE=CPU lets CI smoke-test the image on a runner without one).
 PROVIDERS = (
-    [("OpenVINOExecutionProvider", {"device_type": "GPU"})]
+    [
+        (
+            "OpenVINOExecutionProvider",
+            {"device_type": os.environ.get("OPENVINO_DEVICE", "GPU")},
+        )
+    ]
     if "OpenVINOExecutionProvider" in ort.get_available_providers()
     else ["CPUExecutionProvider"]
 )
