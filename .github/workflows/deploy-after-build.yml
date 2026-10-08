@@ -6,6 +6,9 @@ on:
       - Build Images
     types:
       - completed
+  # Redeploy whatever IMAGE in the host's env file points at (usually :latest),
+  # without building.
+  workflow_dispatch:
 
 concurrency:
   group: deploy-after-build
@@ -14,12 +17,14 @@ concurrency:
 jobs:
   deploy:
     # Only a successful build of a build-X.Y.Z tag deploys; a manual build stops
-    # at the registry.
+    # at the registry. A manual run of this workflow deploys directly.
     if: >-
       ${{
-        github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.head_repository.full_name == github.repository &&
-        startsWith(github.event.workflow_run.head_branch, 'build-')
+        github.event_name == 'workflow_dispatch' || (
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.head_repository.full_name == github.repository &&
+          startsWith(github.event.workflow_run.head_branch, 'build-')
+        )
       }}
     runs-on: ubuntu-latest
     permissions:
