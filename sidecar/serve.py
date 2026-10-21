@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import NamedTuple
 
+import anyio
 import cv2
 import httpx
 import numpy as np
@@ -30,7 +31,6 @@ import onnxruntime as ort
 import orjson
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import ORJSONResponse, PlainTextResponse, Response
-from starlette.concurrency import run_in_threadpool
 
 from preprocess import embedder_blob, letterbox
 
@@ -53,6 +53,21 @@ UPSTREAM_ATTEMPTS = 3
 # Share of the smaller box inside the larger one past which both are one animal.
 # Two pets cuddling rarely put one 90% inside the other's box.
 NESTED_OVERLAP = 0.9
+# Read covers slow first requests while upstream loads a model; connect is short so
+# an upstream that drops packets (host asleep) fails fast instead of holding a job.
+UPSTREAM_TIMEOUT = float(os.environ.get("UPSTREAM_TIMEOUT", "120"))
+UPSTREAM_CONNECT_TIMEOUT = float(os.environ.get("UPSTREAM_CONNECT_TIMEOUT", "5"))
+# ONNX Runtime already uses every core per run, so parallel runs only add memory.
+INFERENCE_CONCURRENCY = int(os.environ.get("INFERENCE_CONCURRENCY", "1"))
+# Caps the embedder batch, and with it peak memory, for photos with many animals.
+EMBED_BATCH = int(os.environ.get("EMBED_BATCH", "8"))
+
+if KEEP_HUMAN_FACES and not UPSTREAM_URL:
+    # Answering with animals only would look like a complete result, and an Immich
+    # face refresh deletes every human face it does not find again.
+    raise SystemExit(
+        "animal-ml: UPSTREAM_ML_URL is required while KEEP_HUMAN_FACES is true"
+    )
 
 
 # Only the openvino image ships this provider; there the models run on the Intel GPU
@@ -204,19 +219,23 @@ def _embed(crops: list[tuple[np.ndarray, _Species]]) -> list[np.ndarray]:
     by_stem = defaultdict(list)
     for i, (_, kind) in enumerate(crops):
         by_stem[kind.embedder_stem].append(i)
-    for stem, indices in by_stem.items():
+    for stem, all_indices in by_stem.items():
         embedder = embedders[stem]
-        batch = np.concatenate(
-            [
-                embedder_blob(crops[i][0], embedder.size, embedder.mean, embedder.std)
-                for i in indices
-            ]
-        )
-        for i, vector in zip(
-            indices, embedder.session.run(None, {embedder.input_name: batch})[0]
-        ):
-            shift = crops[i][1].shift
-            vectors[i] = _rescale(vector, shift) if 0 < shift < 1 else vector
+        for start in range(0, len(all_indices), EMBED_BATCH):
+            indices = all_indices[start : start + EMBED_BATCH]
+            batch = np.concatenate(
+                [
+                    embedder_blob(
+                        crops[i][0], embedder.size, embedder.mean, embedder.std
+                    )
+                    for i in indices
+                ]
+            )
+            for i, vector in zip(
+                indices, embedder.session.run(None, {embedder.input_name: batch})[0]
+            ):
+                shift = crops[i][1].shift
+                vectors[i] = _rescale(vector, shift) if 0 < shift < 1 else vector
     return vectors
 
 
@@ -232,12 +251,22 @@ def _pad(bbox: list[int], width: int, height: int) -> tuple[int, int, int, int]:
 
 
 _client: httpx.AsyncClient
+_limiter: anyio.CapacityLimiter | None = None
+
+
+def _inference_limiter() -> anyio.CapacityLimiter:
+    # Created on first use, inside the running event loop.
+    global _limiter
+    if _limiter is None:
+        _limiter = anyio.CapacityLimiter(INFERENCE_CONCURRENCY)
+    return _limiter
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     global _client
-    async with httpx.AsyncClient(timeout=120) as _client:
+    timeout = httpx.Timeout(UPSTREAM_TIMEOUT, connect=UPSTREAM_CONNECT_TIMEOUT)
+    async with httpx.AsyncClient(timeout=timeout) as _client:
         yield
 
 
@@ -254,6 +283,13 @@ logging.getLogger("uvicorn.error").info(
         for s in species.values()
     ),
 )
+
+
+@app.get("/")
+async def root() -> ORJSONResponse:
+    # Liveness only. /ping also reports upstream, so a container health check on it
+    # would restart the sidecar whenever upstream is down.
+    return ORJSONResponse({"message": "animal-ml"})
 
 
 @app.get("/ping")
@@ -284,11 +320,12 @@ async def predict(request: Request) -> Response:
             media_type=upstream.headers.get("content-type"),
         )
 
-    rgb = await run_in_threadpool(_decode, await form["image"].read())
+    rgb = await anyio.to_thread.run_sync(_decode, await form["image"].read())
     # ONNX runs in a worker thread so the event loop keeps serving pings, CLIP and
     # the upstream face request while animals are inferred.
     animals, humans = await asyncio.gather(
-        run_in_threadpool(_animal_faces, rgb), _human_faces(body, content_type)
+        anyio.to_thread.run_sync(_animal_faces, rgb, limiter=_inference_limiter()),
+        _human_faces(body, content_type),
     )
     height, width = rgb.shape[:2]
     return ORJSONResponse(
@@ -327,7 +364,7 @@ def _animal_faces(rgb: np.ndarray) -> list[dict]:
 
 
 async def _human_faces(body: bytes, content_type: str) -> list[dict]:
-    if not (KEEP_HUMAN_FACES and UPSTREAM_URL):
+    if not KEEP_HUMAN_FACES:
         return []
     upstream = await _post_upstream(body, content_type)
     upstream.raise_for_status()
