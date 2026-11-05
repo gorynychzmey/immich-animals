@@ -125,6 +125,30 @@ def test_each_species_gets_its_own_threshold_embedder_and_mapping(
         assert abs(cosine - np.sqrt(0.5 / 0.7)) < 0.1  # cat's own shift was applied
 
 
+def test_a_box_nested_in_a_stronger_one_is_dropped(tmp_path, monkeypatch):
+    rows = [
+        [200, 50, 500, 300, 0.45, 1],  # the cat
+        [0, 30, 520, 320, 0.43, 1],  # the same cat again, with most of the room
+        [450, 250, 600, 400, 0.40, 1],  # a second cat, overlapping the first
+        [210, 60, 300, 150, 0.35, 0],  # the cat's head, labelled dog
+    ]
+    _constant_model(
+        tmp_path / "detector.onnx",
+        [1, 3, 640, 640],
+        np.array([rows], np.float32),
+        names="{0: 'dog', 1: 'cat'}",
+    )
+    _embedder(tmp_path, "embedding", np.ones(512, np.float32))
+    serve = _load_serve(tmp_path, monkeypatch, KEEP_HUMAN_FACES="false")
+
+    response = TestClient(serve.app).post(
+        "/predict", data={"entries": json.dumps(ENTRIES)}, files={"image": _image()}
+    )
+
+    scores = [round(f["score"], 2) for f in response.json()["facial-recognition"]]
+    assert sorted(scores) == [0.4, 0.45]
+
+
 def _slow_detector_serve(tmp_path, monkeypatch, **env):
     """serve with a detector that blocks until released; returns (serve, started, release, done)."""
     _constant_model(
