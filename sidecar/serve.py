@@ -352,7 +352,7 @@ async def _lifespan(app: FastAPI):
 app = FastAPI(lifespan=_lifespan)
 logging.getLogger("uvicorn.error").info(
     "animal-ml: %s, people=%s, upstream=%s, %s",
-    detector.get_providers()[0],
+    _models.detector.get_providers()[0],
     KEEP_HUMAN_FACES,
     UPSTREAM_URL or "unset",
     "; ".join(
